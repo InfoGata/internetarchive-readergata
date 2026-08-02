@@ -19,7 +19,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@infogata/readergata-plugin-typings": "1.9.0",
+    "@infogata/readergata-plugin-typings": "1.10.0",
     "@preact/preset-vite": "^2.10.5",
     "@tailwindcss/vite": "^4.3.1",
     "@testing-library/jest-dom": "^6.6.3",

@@ -11,12 +11,28 @@ import {
   pickFile,
   toArray,
 } from "../index";
-import { defaultSettings, Settings } from "../shared";
+import {
+  buildFilterInfo,
+  effectiveValues,
+  escapeTerm,
+  resolveQuery,
+} from "../filters";
+import { defaultSettings, Settings, SortOption } from "../shared";
 
 const settings = (overrides: Partial<Settings> = {}): Settings => ({
   ...defaultSettings,
   ...overrides,
 });
+
+/** The resolved query for a set of chosen filters, as searchFeed builds it. */
+const resolved = (
+  chosen: Record<string, string> = {},
+  overrides: Partial<Settings> = {},
+  collectionSort?: SortOption
+) => resolveQuery(effectiveValues(chosen, settings(overrides), collectionSort));
+
+const filterById = (info: FilterInfo, id: string) =>
+  info.filters.find((f) => f.id === id);
 
 beforeEach(() => {
   localStorage.clear();
@@ -51,36 +67,151 @@ describe("apiId", () => {
 
 describe("buildQuery", () => {
   it("restricts to texts with a readable file and excludes restricted items", () => {
-    expect(buildQuery(["collection:gutenberg"], settings())).toBe(
+    expect(buildQuery(["collection:gutenberg"], resolved())).toBe(
       '(collection:gutenberg) AND mediatype:texts AND -access-restricted-item:true AND (format:"EPUB" OR format:"PDF")'
     );
   });
 
   it("drops empty bases so an unfiltered feed is still valid", () => {
-    expect(buildQuery(["", undefined], settings())).toBe(
+    expect(buildQuery(["", undefined], resolved())).toBe(
       'mediatype:texts AND -access-restricted-item:true AND (format:"EPUB" OR format:"PDF")'
     );
   });
 
   it("combines a collection with the user's search terms", () => {
-    expect(buildQuery(["collection:zines", "punk"], settings())).toBe(
+    expect(buildQuery(["collection:zines", "punk"], resolved())).toBe(
       '(collection:zines) AND (punk) AND mediatype:texts AND -access-restricted-item:true AND (format:"EPUB" OR format:"PDF")'
     );
   });
 
   it("narrows to a single format when asked", () => {
-    expect(buildQuery([], settings({ format: "epub" }))).toContain(
+    expect(buildQuery([], resolved({}, { format: "epub" }))).toContain(
       'AND format:"EPUB"'
     );
-    expect(buildQuery([], settings({ format: "pdf" }))).toContain(
+    expect(buildQuery([], resolved({}, { format: "pdf" }))).toContain(
       'AND format:"PDF"'
     );
   });
 
   it("keeps restricted items when the user opts in", () => {
-    expect(buildQuery([], settings({ includeRestricted: true }))).not.toContain(
-      "access-restricted-item"
+    expect(
+      buildQuery([], resolved({}, { includeRestricted: true }))
+    ).not.toContain("access-restricted-item");
+  });
+
+  it("appends the clauses the filters contribute", () => {
+    expect(
+      buildQuery(
+        ["collection:zines"],
+        resolved({ language: "French", creator: "Doyle", yearFrom: "1900" })
+      )
+    ).toBe(
+      '(collection:zines) AND mediatype:texts AND -access-restricted-item:true AND (format:"EPUB" OR format:"PDF") AND language:"French" AND creator:"Doyle" AND year:[1900 TO *]'
     );
+  });
+});
+
+describe("effectiveValues", () => {
+  it("falls back to the user's settings", () => {
+    expect(effectiveValues(undefined, settings())).toEqual({
+      sort: "downloads",
+      format: "any",
+      restricted: "exclude",
+      language: "any",
+      creator: "",
+      yearFrom: "",
+      yearTo: "",
+    });
+  });
+
+  it("prefers the collection's own sort over the settings default", () => {
+    expect(effectiveValues(undefined, settings(), "date").sort).toBe("date");
+  });
+
+  it("lets a chosen sort override the collection's", () => {
+    expect(effectiveValues({ sort: "title" }, settings(), "date").sort).toBe(
+      "title"
+    );
+  });
+
+  it("ignores values that are not filters it knows", () => {
+    const values = effectiveValues(
+      { sort: "nonsense", format: "djvu" },
+      settings({ sort: "date", format: "epub" })
+    );
+    expect(values.sort).toBe("date");
+    expect(values.format).toBe("epub");
+  });
+
+  it("reads restricted from settings when the user has not chosen", () => {
+    expect(
+      effectiveValues(undefined, settings({ includeRestricted: true }))
+        .restricted
+    ).toBe("include");
+    expect(
+      effectiveValues({ restricted: "exclude" }, settings({ includeRestricted: true }))
+        .restricted
+    ).toBe("exclude");
+  });
+});
+
+describe("resolveQuery", () => {
+  it("turns a sort into an archive.org expression", () => {
+    expect(resolved({ sort: "date" }).sort).toBe("addeddate desc");
+    expect(resolved({ sort: "relevance" }).sort).toBe(undefined);
+  });
+
+  it("adds no clause for the any-language option", () => {
+    expect(resolved({ language: "any" }).clauses).toEqual([]);
+  });
+
+  it("builds a two-sided year range", () => {
+    expect(resolved({ yearFrom: "1900", yearTo: "1950" }).clauses).toEqual([
+      "year:[1900 TO 1950]",
+    ]);
+  });
+
+  it("leaves the open end of a one-sided range as a wildcard", () => {
+    expect(resolved({ yearTo: "1950" }).clauses).toEqual(["year:[* TO 1950]"]);
+  });
+
+  it("ignores a year that is not a year", () => {
+    expect(resolved({ yearFrom: "nineteen hundred" }).clauses).toEqual([]);
+  });
+
+  it("ignores a blank author", () => {
+    expect(resolved({ creator: "   " }).clauses).toEqual([]);
+  });
+
+  it("escapes a value so it cannot break out of the quoted phrase", () => {
+    expect(resolved({ creator: 'Doyle" OR mediatype:movies' }).clauses).toEqual([
+      'creator:"Doyle\\" OR mediatype:movies"',
+    ]);
+  });
+});
+
+describe("escapeTerm", () => {
+  it("escapes backslashes before quotes so the escape is not itself escaped", () => {
+    expect(escapeTerm('a\\b"c')).toBe('a\\\\b\\"c');
+  });
+});
+
+describe("buildFilterInfo", () => {
+  it("reports the value each filter actually resolved to", () => {
+    const info = buildFilterInfo(
+      effectiveValues({ language: "German" }, settings({ sort: "title" }))
+    );
+    expect(filterById(info, "sort")?.value).toBe("title");
+    expect(filterById(info, "language")?.value).toBe("German");
+    expect(filterById(info, "restricted")?.value).toBe("exclude");
+  });
+
+  it("never offers an empty option value, which the app's select rejects", () => {
+    const info = buildFilterInfo(effectiveValues(undefined, settings()));
+    const values = info.filters.flatMap((f) =>
+      (f.options ?? []).map((o) => o.value)
+    );
+    expect(values.every((v) => v.length > 0)).toBe(true);
   });
 });
 

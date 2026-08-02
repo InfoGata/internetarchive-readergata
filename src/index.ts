@@ -1,4 +1,10 @@
 import {
+  buildFilterInfo,
+  effectiveValues,
+  ResolvedQuery,
+  resolveQuery,
+} from "./filters";
+import {
   defaultSettings,
   FormatOption,
   MessageType,
@@ -80,13 +86,6 @@ export const parseApiId = (apiId?: string): FeedQuery => {
   };
 };
 
-const SORTS: Record<SortOption, string | undefined> = {
-  relevance: undefined,
-  downloads: "downloads desc",
-  date: "addeddate desc",
-  title: "titleSorter asc",
-};
-
 const formatClause = (format: FormatOption) => {
   switch (format) {
     case "epub":
@@ -105,16 +104,17 @@ const formatClause = (format: FormatOption) => {
  */
 export const buildQuery = (
   bases: (string | undefined)[],
-  settings: Settings
+  resolved: ResolvedQuery
 ): string => {
   const parts = bases
     .filter((base): base is string => !!base && base.trim().length > 0)
     .map((base) => `(${base})`);
   parts.push("mediatype:texts");
-  if (!settings.includeRestricted) {
+  if (!resolved.includeRestricted) {
     parts.push("-access-restricted-item:true");
   }
-  parts.push(formatClause(settings.format));
+  parts.push(formatClause(resolved.format));
+  parts.push(...resolved.clauses);
   return parts.join(" AND ");
 };
 
@@ -276,7 +276,8 @@ interface SearchResponse {
 const searchFeed = async (
   feedQuery: FeedQuery,
   userQuery: string | undefined,
-  requestedPage: PageInfo | undefined
+  requestedPage: PageInfo | undefined,
+  chosenFilters: Record<string, string> | undefined
 ): Promise<Feed> => {
   const settings = getSettings();
   const rows = Math.min(Math.max(settings.resultsPerPage, 1), 100);
@@ -284,10 +285,13 @@ const searchFeed = async (
   const maxOffset = Math.max(0, DEEP_PAGING_LIMIT - rows);
   const offset = Math.min(Math.max(requestedPage?.offset ?? 0, 0), maxOffset);
 
-  const query = buildQuery([feedQuery.query, userQuery], settings);
-  const sort = SORTS[feedQuery.sort ?? settings.sort];
+  const values = effectiveValues(chosenFilters, settings, feedQuery.sort);
+  const resolved = resolveQuery(values);
+  const query = buildQuery([feedQuery.query, userQuery], resolved);
 
-  const response = await networkFetch(buildSearchUrl(query, sort, rows, offset));
+  const response = await networkFetch(
+    buildSearchUrl(query, resolved.sort, rows, offset)
+  );
   const json: SearchResponse = await response.json();
   if (json.error) {
     throw new Error(json.error);
@@ -300,6 +304,7 @@ const searchFeed = async (
     type: "publication",
     items: json.response.docs.map(docToPublication),
     hasSearch: true,
+    filterInfo: buildFilterInfo(values),
     pageInfo: {
       // Results past the deep paging limit cannot be fetched, so reporting the
       // real count here would leave "next page" enabled onto a page that errors.
@@ -312,6 +317,7 @@ const searchFeed = async (
 
 application.onGetFeed = async (request: GetFeedRequest): Promise<Feed> => {
   if (!request.apiId) {
+    // The collection list itself has nothing to filter, so it advertises none.
     return {
       type: "catalog",
       items: COLLECTIONS.map(
@@ -324,11 +330,21 @@ application.onGetFeed = async (request: GetFeedRequest): Promise<Feed> => {
     };
   }
 
-  return searchFeed(parseApiId(request.apiId), undefined, request.pageInfo);
+  return searchFeed(
+    parseApiId(request.apiId),
+    undefined,
+    request.pageInfo,
+    request.filters
+  );
 };
 
 application.onSearch = async (request: SearchRequest): Promise<Feed> =>
-  searchFeed(parseApiId(request.apiId), request.query, request.pageInfo);
+  searchFeed(
+    parseApiId(request.apiId),
+    request.query,
+    request.pageInfo,
+    request.filters
+  );
 
 export const blobToString = (blob: Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
