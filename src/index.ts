@@ -22,6 +22,7 @@ const METADATA_URL = "https://archive.org/metadata/";
  */
 const CORS_URL = "https://archive.org/cors/";
 const THUMB_URL = "https://archive.org/services/img/";
+const DETAILS_URL = "https://archive.org/details/";
 
 /**
  * advancedsearch.php refuses any request where `page * rows` goes past this,
@@ -159,6 +160,7 @@ export const docToPublication = (doc: SearchDoc): Publication => {
     authors: authors.length > 0 ? authors : undefined,
     images: [{ url: `${THUMB_URL}${encodeURIComponent(doc.identifier)}` }],
     sources,
+    originalUrl: `${DETAILS_URL}${encodeURIComponent(doc.identifier)}`,
   };
 };
 

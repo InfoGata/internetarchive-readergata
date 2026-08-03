@@ -288,6 +288,18 @@ describe("docToPublication", () => {
       "some-item"
     );
   });
+
+  it("links back to the item's page on archive.org", () => {
+    expect(
+      docToPublication({ identifier: "adventuresofsher00doyl" }).originalUrl
+    ).toBe("https://archive.org/details/adventuresofsher00doyl");
+  });
+
+  it("escapes identifiers that are not url safe", () => {
+    expect(docToPublication({ identifier: "some item#1" }).originalUrl).toBe(
+      "https://archive.org/details/some%20item%231"
+    );
+  });
 });
 
 describe("source tokens", () => {

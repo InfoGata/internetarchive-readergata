@@ -1,6 +1,6 @@
 {
   "name": "internetarchive-readergata",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "",
   "author": "",
   "dependencies": {
@@ -19,7 +19,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@infogata/readergata-plugin-typings": "1.10.0",
+    "@infogata/readergata-plugin-typings": "1.11.0",
     "@preact/preset-vite": "^2.10.5",
     "@tailwindcss/vite": "^4.3.1",
     "@testing-library/jest-dom": "^6.6.3",
