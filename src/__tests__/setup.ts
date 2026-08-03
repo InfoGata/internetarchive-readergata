@@ -5,7 +5,8 @@ import "@testing-library/jest-dom/vitest";
 (globalThis as any).application = {
   onUiMessage: null,
   onGetFeed: null,
-  onGetPublication: null,
+  onGetPublicationSource: null,
+  onGetPublicationDetails: null,
   onSearch: null,
   onChangeTheme: null,
   postUiMessage: vi.fn(),

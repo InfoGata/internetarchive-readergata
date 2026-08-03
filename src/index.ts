@@ -131,7 +131,14 @@ interface SearchDoc {
   description?: string | string[];
   year?: number;
   format?: string | string[];
+  avg_rating?: string | number;
 }
+
+const toNumber = (value: string | number | undefined) => {
+  if (value === undefined || value === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
 
 export const docToPublication = (doc: SearchDoc): Publication => {
   const formats = toArray(doc.format);
@@ -141,6 +148,7 @@ export const docToPublication = (doc: SearchDoc): Publication => {
       name: "EPUB",
       source: buildSourceToken(doc.identifier, "epub"),
       type: "application/epub+zip",
+      acquisitionType: "open-access",
     });
   }
   if (formats.some((format) => format.endsWith("PDF"))) {
@@ -148,6 +156,7 @@ export const docToPublication = (doc: SearchDoc): Publication => {
       name: "PDF",
       source: buildSourceToken(doc.identifier, "pdf"),
       type: "application/pdf",
+      acquisitionType: "open-access",
     });
   }
 
@@ -159,8 +168,140 @@ export const docToPublication = (doc: SearchDoc): Publication => {
     summary: toArray(doc.description).join("\n\n") || undefined,
     authors: authors.length > 0 ? authors : undefined,
     images: [{ url: `${THUMB_URL}${encodeURIComponent(doc.identifier)}` }],
+    published: doc.year ? String(doc.year) : undefined,
+    rating: toNumber(doc.avg_rating),
     sources,
     originalUrl: `${DETAILS_URL}${encodeURIComponent(doc.identifier)}`,
+  };
+};
+
+/**
+ * The descriptive half of a `/metadata/<id>` response. Only what a publication
+ * page can show — the endpoint returns a great deal more.
+ */
+export interface ArchiveMetadata {
+  identifier?: string;
+  title?: string;
+  creator?: string | string[];
+  description?: string | string[];
+  publisher?: string | string[];
+  language?: string | string[];
+  subject?: string | string[];
+  collection?: string | string[];
+  date?: string;
+  year?: string | number;
+  publicdate?: string;
+  rights?: string;
+  licenseurl?: string;
+  imagecount?: string | number;
+  isbn?: string | string[];
+  "related-external-id"?: string | string[];
+}
+
+/**
+ * Archive.org dates come back as "1922", "1922-01-01" and
+ * "2011-07-19 12:34:56" interchangeably, sometimes on the same item.
+ */
+export const normalizeArchiveDate = (
+  value: string | number | undefined
+): string | undefined => {
+  if (value === undefined) return undefined;
+  const text = String(value).trim();
+  if (!text) return undefined;
+  // A bare year stays a year: parsing it would invent a January 1st.
+  if (/^\d{4}$/.test(text)) return text;
+  const isoish = text.replace(" ", "T");
+  // Archive.org reports these in UTC but writes no timezone on them, and a
+  // bare timestamp is parsed as local time — which would shift the date for
+  // every reader west of Greenwich.
+  const hasZone = /(Z|[+-]\d{2}:?\d{2})$/.test(isoish);
+  const parsed = new Date(
+    hasZone || !isoish.includes("T") ? isoish : `${isoish}Z`
+  );
+  return isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+};
+
+/**
+ * Archive.org records other catalogs' ids as `urn:<scheme>:<value>`.
+ */
+export const parseExternalId = (value: string): Identifier | undefined => {
+  const match = /^urn:([^:]+):(.+)$/i.exec(value.trim());
+  if (!match) return undefined;
+  return { type: match[1].toLowerCase(), value: match[2] };
+};
+
+const buildIdentifiers = (
+  identifier: string,
+  metadata: ArchiveMetadata
+): Identifier[] => {
+  const identifiers: Identifier[] = [
+    { type: "archive.org", value: identifier },
+  ];
+  for (const isbn of toArray(metadata.isbn)) {
+    identifiers.push({ type: "isbn", value: String(isbn) });
+  }
+  for (const external of toArray(metadata["related-external-id"])) {
+    const parsed = parseExternalId(String(external));
+    if (parsed) identifiers.push(parsed);
+  }
+  return identifiers;
+};
+
+/**
+ * Builds a publication from a `/metadata/<id>` response.
+ *
+ * Sources come from `files` rather than the search doc's `format` list, which
+ * is what makes a file size available — the same lookup the download path
+ * already does, just done once for the whole record.
+ */
+export const metadataToPublication = (
+  identifier: string,
+  metadata: ArchiveMetadata,
+  files: ArchiveFile[] | undefined
+): Publication => {
+  const sources: PublicationSource[] = [];
+  const kinds: { kind: PublicationKind; name: string; type: string }[] = [
+    { kind: "epub", name: "EPUB", type: "application/epub+zip" },
+    { kind: "pdf", name: "PDF", type: "application/pdf" },
+  ];
+  for (const { kind, name, type } of kinds) {
+    const file = pickFile(files, kind);
+    if (!file) continue;
+    sources.push({
+      name,
+      source: buildSourceToken(identifier, kind),
+      type,
+      size: toNumber(file.size),
+      acquisitionType: "open-access",
+    });
+  }
+
+  const authors = toArray(metadata.creator).map((name): Author => ({ name }));
+  const categories: Category[] = [
+    ...toArray(metadata.subject).map((name): Category => ({ name })),
+    ...toArray(metadata.collection).map(
+      (name): Category => ({ name, scheme: "archive.org:collection" })
+    ),
+  ];
+  const languages = toArray(metadata.language);
+
+  return {
+    title: metadata.title ?? identifier,
+    apiId: identifier,
+    summary: toArray(metadata.description).join("\n\n") || undefined,
+    authors: authors.length > 0 ? authors : undefined,
+    publisher: toArray(metadata.publisher).join(", ") || undefined,
+    languages: languages.length > 0 ? languages : undefined,
+    published: normalizeArchiveDate(
+      metadata.date ?? metadata.year ?? metadata.publicdate
+    ),
+    categories: categories.length > 0 ? categories : undefined,
+    pageCount: toNumber(metadata.imagecount),
+    rights: metadata.rights ?? metadata.licenseurl,
+    identifiers: buildIdentifiers(identifier, metadata),
+    images: [{ url: `${THUMB_URL}${encodeURIComponent(identifier)}` }],
+    sources,
+    originalUrl: `${DETAILS_URL}${encodeURIComponent(identifier)}`,
   };
 };
 
@@ -237,6 +378,11 @@ const networkFetch = async (url: string): Promise<Response> => {
   }
 };
 
+/**
+ * Kept deliberately short: every field here is fetched for every result on
+ * every page. The richer metadata a publication page shows comes from
+ * `onGetPublicationDetails`, which asks about one item at a time.
+ */
 const FIELDS = [
   "identifier",
   "title",
@@ -244,6 +390,7 @@ const FIELDS = [
   "description",
   "year",
   "format",
+  "avg_rating",
 ];
 
 export const buildSearchUrl = (
@@ -278,7 +425,7 @@ interface SearchResponse {
 const searchFeed = async (
   feedQuery: FeedQuery,
   userQuery: string | undefined,
-  requestedPage: PageInfo | undefined,
+  requestedPage: PageRequest | undefined,
   chosenFilters: Record<string, string> | undefined
 ): Promise<Feed> => {
   const settings = getSettings();
@@ -359,15 +506,32 @@ export const blobToString = (blob: Blob): Promise<string> => {
   });
 };
 
-application.onGetPublication = async (
-  request: GetPublicationRequest
-): Promise<GetPublicationResponse> => {
-  const { identifier, kind } = parseSourceToken(request.source);
-  const metadataResponse = await networkFetch(
+/** The one `/metadata/<id>` call, shared by the download and detail paths. */
+const fetchArchiveMetadata = async (
+  identifier: string
+): Promise<{ metadata?: ArchiveMetadata; files?: ArchiveFile[] }> => {
+  const response = await networkFetch(
     `${METADATA_URL}${encodeURIComponent(identifier)}`
   );
-  const metadata: { files?: ArchiveFile[] } = await metadataResponse.json();
-  const file = pickFile(metadata.files, kind);
+  return await response.json();
+};
+
+application.onGetPublicationDetails = async (
+  request: GetPublicationDetailsRequest
+): Promise<Publication> => {
+  const { metadata, files } = await fetchArchiveMetadata(request.apiId);
+  if (!metadata) {
+    throw new Error(`Nothing at archive.org/details/${request.apiId}`);
+  }
+  return metadataToPublication(request.apiId, metadata, files);
+};
+
+application.onGetPublicationSource = async (
+  request: GetPublicationSourceRequest
+): Promise<GetPublicationSourceResponse> => {
+  const { identifier, kind } = parseSourceToken(request.source);
+  const { files } = await fetchArchiveMetadata(identifier);
+  const file = pickFile(files, kind);
   if (!file) {
     throw new Error(`No ${kind} file available for ${identifier}`);
   }

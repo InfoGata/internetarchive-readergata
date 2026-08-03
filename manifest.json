@@ -2,11 +2,13 @@
   "id": "S3CirQTl9LBaSsSdkAh3K",
   "alias": "archive",
   "name": "Internet Archive",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Read books and PDFs from the Internet Archive.",
   "script": "dist/index.js",
   "options": "dist/options.html",
   "updateUrl": "https://cdn.jsdelivr.net/gh/InfoGata/internetarchive-readergata@latest/manifest.json",
   "homepage": "https://github.com/InfoGata/internetarchive-readergata",
-  "siteMatch": ["*://archive.org/details/*"]
+  "siteMatch": [
+    "*://archive.org/details/*"
+  ]
 }

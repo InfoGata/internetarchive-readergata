@@ -6,7 +6,10 @@ import {
   buildSourceToken,
   docToPublication,
   getSettings,
+  metadataToPublication,
+  normalizeArchiveDate,
   parseApiId,
+  parseExternalId,
   parseSourceToken,
   pickFile,
   toArray,
@@ -264,15 +267,27 @@ describe("docToPublication", () => {
         name: "EPUB",
         source: "adventuresofsher00doyl|epub",
         type: "application/epub+zip",
+        acquisitionType: "open-access",
       },
       {
         name: "PDF",
         source: "adventuresofsher00doyl|pdf",
         type: "application/pdf",
+        acquisitionType: "open-access",
       },
     ]);
     expect(publication.authors).toEqual([{ name: "Doyle, Arthur Conan" }]);
     expect(publication.apiId).toBe("adventuresofsher00doyl");
+  });
+
+  it("uses the year the search already returned", () => {
+    const publication = docToPublication({
+      identifier: "frankenstein00shel",
+      year: 1818,
+      avg_rating: "4.5",
+    });
+    expect(publication.published).toBe("1818");
+    expect(publication.rating).toBe(4.5);
   });
 
   it("offers no buttons when nothing readable is present", () => {
@@ -367,5 +382,166 @@ describe("getSettings", () => {
   it("falls back to defaults on unparseable storage", () => {
     localStorage.setItem("settings", "{not json");
     expect(getSettings()).toEqual(defaultSettings);
+  });
+});
+
+describe("normalizeArchiveDate", () => {
+  it("keeps a bare year, which is what most scanned books carry", () => {
+    expect(normalizeArchiveDate("1922")).toBe("1922");
+    expect(normalizeArchiveDate(1922)).toBe("1922");
+  });
+
+  it("normalizes an ISO date", () => {
+    expect(normalizeArchiveDate("1922-01-01")).toBe("1922-01-01T00:00:00.000Z");
+  });
+
+  it("normalizes the space-separated timestamp archive.org also uses", () => {
+    expect(normalizeArchiveDate("2011-07-19 12:34:56")).toBe(
+      "2011-07-19T12:34:56.000Z"
+    );
+  });
+
+  it("is undefined for nothing and for nonsense", () => {
+    expect(normalizeArchiveDate(undefined)).toBeUndefined();
+    expect(normalizeArchiveDate("")).toBeUndefined();
+    expect(normalizeArchiveDate("no idea")).toBeUndefined();
+  });
+});
+
+describe("parseExternalId", () => {
+  it("splits a urn into scheme and value", () => {
+    expect(parseExternalId("urn:isbn:9780486282114")).toEqual({
+      type: "isbn",
+      value: "9780486282114",
+    });
+  });
+
+  it("keeps colons inside the value", () => {
+    expect(parseExternalId("urn:doi:10.1000/xyz:123")).toEqual({
+      type: "doi",
+      value: "10.1000/xyz:123",
+    });
+  });
+
+  it("is undefined for anything that is not a urn", () => {
+    expect(parseExternalId("9780486282114")).toBeUndefined();
+    expect(parseExternalId("urn:isbn:")).toBeUndefined();
+  });
+});
+
+describe("metadataToPublication", () => {
+  const files = [
+    { name: "frankenstein.epub", format: "EPUB", size: "1200000" },
+    { name: "frankenstein.pdf", format: "Text PDF", size: "8400000" },
+    { name: "frankenstein_bw.pdf", format: "Image Container PDF" },
+  ];
+
+  it("maps a fully populated record", () => {
+    const publication = metadataToPublication(
+      "frankenstein00shel",
+      {
+        title: "Frankenstein",
+        creator: ["Shelley, Mary"],
+        description: "A scientist and his creature.",
+        publisher: "Lackington",
+        language: ["English"],
+        subject: ["Horror", "Gothic"],
+        collection: ["gutenberg"],
+        date: "1818",
+        rights: "Public domain",
+        imagecount: "280",
+        isbn: "9780486282114",
+        "related-external-id": ["urn:oclc:12345", "not-a-urn"],
+      },
+      files
+    );
+
+    expect(publication.title).toBe("Frankenstein");
+    expect(publication.apiId).toBe("frankenstein00shel");
+    expect(publication.publisher).toBe("Lackington");
+    expect(publication.languages).toEqual(["English"]);
+    expect(publication.published).toBe("1818");
+    expect(publication.pageCount).toBe(280);
+    expect(publication.rights).toBe("Public domain");
+    expect(publication.categories).toEqual([
+      { name: "Horror" },
+      { name: "Gothic" },
+      { name: "gutenberg", scheme: "archive.org:collection" },
+    ]);
+    expect(publication.identifiers).toEqual([
+      { type: "archive.org", value: "frankenstein00shel" },
+      { type: "isbn", value: "9780486282114" },
+      { type: "oclc", value: "12345" },
+    ]);
+    // Sizes come from the file list, which is the point of building sources
+    // here rather than from the search doc's format list.
+    expect(publication.sources).toEqual([
+      {
+        name: "EPUB",
+        source: "frankenstein00shel|epub",
+        type: "application/epub+zip",
+        size: 1200000,
+        acquisitionType: "open-access",
+      },
+      {
+        name: "PDF",
+        source: "frankenstein00shel|pdf",
+        type: "application/pdf",
+        size: 8400000,
+        acquisitionType: "open-access",
+      },
+    ]);
+  });
+
+  it("copes with a record that has almost nothing on it", () => {
+    const publication = metadataToPublication("bare00item", {}, undefined);
+
+    expect(publication.title).toBe("bare00item");
+    expect(publication.authors).toBeUndefined();
+    expect(publication.publisher).toBeUndefined();
+    expect(publication.languages).toBeUndefined();
+    expect(publication.categories).toBeUndefined();
+    expect(publication.published).toBeUndefined();
+    expect(publication.pageCount).toBeUndefined();
+    expect(publication.sources).toEqual([]);
+    // The archive.org id is always known, so there is always one identifier.
+    expect(publication.identifiers).toEqual([
+      { type: "archive.org", value: "bare00item" },
+    ]);
+  });
+
+  it("accepts the scalars archive.org sends instead of arrays", () => {
+    const publication = metadataToPublication(
+      "scalar00item",
+      {
+        creator: "Solo Author",
+        subject: "Poetry",
+        language: "fr",
+        publisher: "A Press",
+      },
+      undefined
+    );
+
+    expect(publication.authors).toEqual([{ name: "Solo Author" }]);
+    expect(publication.categories).toEqual([{ name: "Poetry" }]);
+    expect(publication.languages).toEqual(["fr"]);
+    expect(publication.publisher).toBe("A Press");
+  });
+
+  it("prefers date, then year, then publicdate", () => {
+    expect(
+      metadataToPublication(
+        "x",
+        { date: "1818", year: "1999", publicdate: "2011-07-19 12:34:56" },
+        undefined
+      ).published
+    ).toBe("1818");
+    expect(
+      metadataToPublication(
+        "x",
+        { year: "1999", publicdate: "2011-07-19 12:34:56" },
+        undefined
+      ).published
+    ).toBe("1999");
   });
 });
