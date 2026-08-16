@@ -495,17 +495,6 @@ application.onSearch = async (request: SearchRequest): Promise<Feed> =>
     request.filters
   );
 
-export const blobToString = (blob: Blob): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (res) => {
-      resolve(res.target?.result as string);
-    };
-    reader.onerror = (err) => reject(err);
-    reader.readAsBinaryString(blob);
-  });
-};
-
 /** The one `/metadata/<id>` call, shared by the download and detail paths. */
 const fetchArchiveMetadata = async (
   identifier: string
@@ -544,7 +533,12 @@ application.onGetPublicationSource = async (
   const blob = await fileResponse.blob();
 
   return {
-    source: await blobToString(blob),
+    // The blob itself, not the string of char codes the typings describe.
+    // Archive.org calls a file "EPUB" at any size -- 650 MB ones exist -- and
+    // reading one into a js string costs two bytes of heap per byte of book
+    // before it even crosses the frame. A blob crosses under structured clone
+    // and stays a handle. ReaderGata accepts either.
+    source: blob as unknown as string,
     sourceType: "binary",
   };
 };
